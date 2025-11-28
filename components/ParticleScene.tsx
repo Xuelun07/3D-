@@ -26,10 +26,19 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
 
   const physicsPositions = useRef<Float32Array>(new Float32Array(PARTICLE_COUNT * 3));
 
+  // Random phase offsets for noise functions
   const randomOffsets = useMemo(() => {
     const offsets = new Float32Array(PARTICLE_COUNT);
     for(let i=0; i<PARTICLE_COUNT; i++) offsets[i] = Math.random() * Math.PI * 2;
     return offsets;
+  }, []);
+
+  // Individual particle speeds/inertia (0.5x to 1.5x base speed)
+  // This creates a "swarming" feel rather than a rigid mesh movement
+  const randomSpeeds = useMemo(() => {
+    const speeds = new Float32Array(PARTICLE_COUNT);
+    for(let i=0; i<PARTICLE_COUNT; i++) speeds[i] = 0.5 + Math.random(); 
+    return speeds;
   }, []);
 
   const targetPositions = useMemo(() => {
@@ -105,21 +114,17 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
     // ==========================================================
 
     let expansionFactor = 1.0;
-    let autoSpinX = 0;
-    let autoSpinY = 0;
     let lerpBase = 0.08;
 
     if (isMusicMode) {
         // --- MUSIC MODE: Driven PURELY by audio ---
         
         // 1. Rotation: Auto spin based on Mid/High energy
-        // Continuous rotation that speeds up with music intensity
         const spinSpeed = 0.002 + (high * 0.02);
         pointsRef.current.rotation.y += spinSpeed;
         pointsRef.current.rotation.x = Math.sin(time * 0.5) * 0.1 + (bass * 0.1); 
 
         // 2. Expansion: Driven by Bass (The Beat)
-        // Bass > 0.4 triggers a "Kick" expansion
         expansionFactor = 1.0 + (bass * 2.5);
         // Add a rhythmic wave
         expansionFactor += Math.sin(time * 3.0) * (bass * 0.5);
@@ -182,7 +187,6 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
     const rBase = baseColor.r;
     const gBase = baseColor.g;
     const bBase = baseColor.b;
-    // Boost brightness with audio (applies to both modes, but stronger in music mode usually)
     const boost = bass * 0.6 + high * 0.4;
 
     if (targetPositions) {
@@ -193,12 +197,12 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
             const currentY = physicsPositions.current[pIdx + 1];
             const currentZ = physicsPositions.current[pIdx + 2];
 
-            // 1. Target Calc
+            // 1. Target Calculation
             let tx = targetPositions[pIdx];
             let ty = targetPositions[pIdx + 1];
             let tz = targetPositions[pIdx + 2];
 
-            // Warp Transition
+            // Warp Transition (Random scatter during shape change)
             if (transitionRef.current > 0) {
                 const warp = transitionRef.current * 12;
                 tx += (Math.random() - 0.5) * warp;
@@ -206,12 +210,14 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
                 tz += (Math.random() - 0.5) * warp;
             }
 
-            // Apply Expansion
+            // Apply Expansion (Breathing)
             tx *= expansionFactor;
             ty *= expansionFactor;
             tz *= expansionFactor;
 
-            // Apply Vortex/Spin (Micro-movement within the shape)
+            // --- SOPHISTICATED PHYSICS: ORGANIC FLOW & VORTEX ---
+
+            // A. Vortex/Spin (Micro-movement within the shape)
             const dist = Math.sqrt(tx*tx + tz*tz);
             // In music mode, the vortex is driven purely by audio high freqs
             // In gesture mode, it's driven by gesture value
@@ -219,6 +225,7 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
                 ? (high * 0.8) 
                 : (handData.gestureValue * 0.5);
                 
+            // "Black Hole" spin effect: faster near center
             const spin = time * (0.2 + high * 0.5) + (1.0/(dist+0.1)) * vortexStrength;
             
             const rx = tx * Math.cos(spin) - tz * Math.sin(spin);
@@ -226,33 +233,47 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
             tx = rx;
             tz = rz;
 
-            // Noise / Fluid Dynamics
+            // B. Multi-Layered Noise / Fluid Dynamics
             const offset = randomOffsets[i];
-            const noiseFreq = 0.5; 
-            const noiseAmp = isMusicMode 
-                ? 0.1 + (high * 0.5) // More chaotic in music mode
-                : 0.15 + (handData.gestureValue * 0.2);
 
-            const fluidX = Math.sin(time * 0.8 + currentY * noiseFreq + offset) * noiseAmp;
-            const fluidY = Math.cos(time * 0.7 + currentZ * noiseFreq + offset) * noiseAmp;
-            const fluidZ = Math.sin(time * 0.9 + currentX * noiseFreq + offset) * noiseAmp;
+            // Layer 1: "Wind" (Large scale, slow coherent movement)
+            // Affects particles based on their position space
+            const windTime = time * 0.2;
+            const windX = Math.sin(currentY * 0.4 + windTime) * 0.1;
+            const windZ = Math.cos(currentX * 0.4 + windTime) * 0.1;
 
-            tx += fluidX;
-            ty += fluidY;
-            tz += fluidZ;
+            // Layer 2: "Turbulence" (High frequency, chaotic jitter)
+            // Driven by high frequencies in music mode for "Electric" feel
+            const chaosFreq = 2.0;
+            const chaosTime = time * 1.5;
+            const chaosAmp = isMusicMode 
+                ? 0.15 + (high * 0.6) 
+                : 0.12 + (handData.gestureValue * 0.25);
 
-            // Audio Jitter (Kick drum shockwave)
-            if (bass > 0.3) {
-                const jit = bass * 0.05;
+            // Sine-interference pattern approximation of Perlin noise
+            const turbX = Math.sin(currentZ * chaosFreq + chaosTime + offset);
+            const turbY = Math.cos(currentX * chaosFreq + chaosTime + offset);
+            const turbZ = Math.sin(currentY * chaosFreq + chaosTime + offset);
+
+            tx += windX + (turbX * chaosAmp);
+            ty += (turbY * chaosAmp); // Vertical drift is mostly turbulence
+            tz += windZ + (turbZ * chaosAmp);
+
+            // C. Audio Shockwave (Bass Kick)
+            if (bass > 0.4) {
+                const jit = bass * 0.08;
                 tx += (Math.random()-0.5) * jit;
                 ty += (Math.random()-0.5) * jit;
                 tz += (Math.random()-0.5) * jit;
             }
 
-            // 2. Integration
-            physicsPositions.current[pIdx] += (tx - currentX) * lerpBase;
-            physicsPositions.current[pIdx + 1] += (ty - currentY) * lerpBase;
-            physicsPositions.current[pIdx + 2] += (tz - currentZ) * lerpBase;
+            // 2. Integration (Lerp towards target)
+            // Use INDIVIDUAL inertia (randomSpeeds) to break up uniformity
+            const pInertia = lerpBase * randomSpeeds[i];
+            
+            physicsPositions.current[pIdx] += (tx - currentX) * pInertia;
+            physicsPositions.current[pIdx + 1] += (ty - currentY) * pInertia;
+            physicsPositions.current[pIdx + 2] += (tz - currentZ) * pInertia;
 
             const newX = physicsPositions.current[pIdx];
             const newY = physicsPositions.current[pIdx + 1];
@@ -282,11 +303,23 @@ const ParticleMesh: React.FC<ParticleSceneProps> = ({ currentShape, color, handD
 
             for (let t = 0; t < TRAIL_LENGTH; t++) {
                 const colorIdx = bufferStartIdx + (t * 3);
-                const fade = 1.0 - (t / TRAIL_LENGTH);
-                const alpha = fade * fade; 
-                colors[colorIdx] = r * alpha;
-                colors[colorIdx + 1] = g * alpha;
-                colors[colorIdx + 2] = b * alpha;
+                
+                const trailRatio = t / (TRAIL_LENGTH - 1);
+                
+                // Fade Brightness
+                const fade = Math.pow(1.0 - trailRatio, 1.5);
+                
+                // Desaturation towards tail
+                const lum = (r + g + b) / 3;
+                const saturation = 1.0 - (trailRatio * 0.7);
+                
+                let rT = r * saturation + lum * (1 - saturation);
+                let gT = g * saturation + lum * (1 - saturation);
+                let bT = b * saturation + lum * (1 - saturation);
+
+                colors[colorIdx] = rT * fade;
+                colors[colorIdx + 1] = gT * fade;
+                colors[colorIdx + 2] = bT * fade;
             }
         }
     }
