@@ -26,7 +26,10 @@ import {
   Music,
   Play,
   ListMusic,
-  Square
+  Square,
+  Wand2,
+  Sprout,
+  Sun
 } from 'lucide-react';
 
 // Custom icons
@@ -64,6 +67,77 @@ interface Track {
     url: string;
 }
 
+// --- INTELLIGENT SHAPE MATCHING LOGIC ---
+const getShapeFromFilename = (filename: string): ShapeType | null => {
+    const lower = filename.toLowerCase();
+    
+    // 1. Cosmic / Sci-Fi
+    if (lower.includes('solar') || lower.includes('sun') || lower.includes('planet')) {
+        return ShapeType.SOLAR_SYSTEM;
+    }
+
+    if (
+        lower.includes('interstellar') || 
+        lower.includes('day one') || 
+        lower.includes('galaxy') || 
+        lower.includes('universe') || 
+        lower.includes('cosmos') ||
+        lower.includes('star') ||
+        lower.includes('space') ||
+        lower.includes('zimmer') ||
+        lower.includes('ost') ||
+        lower.includes('soundtrack') ||
+        lower.includes('epic')
+    ) {
+        return ShapeType.GALAXY;
+    }
+    
+    if (lower.includes('saturn') || lower.includes('orbit') || lower.includes('gravity')) {
+        return ShapeType.SATURN;
+    }
+    
+    if (lower.includes('dna') || lower.includes('bio') || lower.includes('tech') || lower.includes('matrix')) {
+        return ShapeType.DNA;
+    }
+
+    // 2. Romantic / Love
+    if (lower.includes('love') || lower.includes('heart') || lower.includes('romance') || lower.includes('kiss')) {
+        return Math.random() > 0.5 ? ShapeType.HEART : ShapeType.DOUBLE_HEART;
+    }
+    
+    if (lower.includes('marry') || lower.includes('wedding') || lower.includes('ring') || lower.includes('diamond')) {
+        return ShapeType.RING;
+    }
+
+    if (lower.includes('you') && lower.includes('me')) {
+        return ShapeType.I_LOVE_U;
+    }
+
+    // 3. Nature / Peaceful
+    if (lower.includes('garden') || lower.includes('meadow') || lower.includes('sea') && lower.includes('flower')) {
+        return ShapeType.FLOWER_SEA;
+    }
+    if (lower.includes('flower') || lower.includes('bloom') || lower.includes('rose') || lower.includes('nature') || lower.includes('spring')) {
+        return ShapeType.FLOWER;
+    }
+    
+    if (lower.includes('fly') || lower.includes('butterfly') || lower.includes('wing')) {
+        return ShapeType.BUTTERFLY;
+    }
+
+    // 4. Spiritual
+    if (lower.includes('zen') || lower.includes('yoga') || lower.includes('buddha') || lower.includes('spirit') || lower.includes('calm')) {
+        return ShapeType.BUDDHA;
+    }
+
+    // 5. Celebration
+    if (lower.includes('firework') || lower.includes('party') || lower.includes('celebrat') || lower.includes('happy') || lower.includes('new year')) {
+        return ShapeType.FIREWORKS;
+    }
+
+    return null; // No specific match found
+};
+
 const App: React.FC = () => {
   const [currentShape, setCurrentShape] = useState<ShapeType>(ShapeType.HEART);
   const [color, setColor] = useState<string>('#ff00aa');
@@ -82,6 +156,7 @@ const App: React.FC = () => {
   const [hasInteracted, setHasInteracted] = useState(false);
   const [playlist, setPlaylist] = useState<Track[]>([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number | null>(null);
+  const [autoMatchedShape, setAutoMatchedShape] = useState<boolean>(false);
   
   // Computed Music Mode: If a track is selected, we are in music mode
   const isMusicMode = currentTrackIndex !== null;
@@ -112,15 +187,12 @@ const App: React.FC = () => {
 
   const handleHandUpdate = useCallback((data: HandData) => {
     setHandData(data);
-    // Only update filter with hand gesture if NOT in music mode
-    // In music mode, filter is open or handled differently
     if (!isMusicMode) {
         audioManager.updateFilter(data.gestureValue);
     }
   }, [isMusicMode]);
 
   const handleGestureTrigger = useCallback(() => {
-    // Disable gesture switching if in music mode
     if (isMusicMode) return;
 
     setCurrentShape((prevShape) => {
@@ -135,6 +207,7 @@ const App: React.FC = () => {
     const randomColor = COLORS[Math.floor(Math.random() * COLORS.length)];
     setColor(randomColor);
     audioManager.triggerWarp();
+    setAutoMatchedShape(false);
   }, [isMusicMode]);
 
   const toggleFullScreen = () => {
@@ -149,6 +222,7 @@ const App: React.FC = () => {
 
   const handleShapeSelect = (type: ShapeType) => {
     audioManager.triggerWarp();
+    setAutoMatchedShape(false);
     if (type === ShapeType.CUSTOM) {
         if (!customPoints) {
             setShowDrawingCanvas(true);
@@ -165,6 +239,7 @@ const App: React.FC = () => {
       setCurrentShape(ShapeType.CUSTOM);
       setShowDrawingCanvas(false);
       audioManager.triggerWarp();
+      setAutoMatchedShape(false);
   };
 
   const playTrack = async (index: number) => {
@@ -174,6 +249,18 @@ const App: React.FC = () => {
           
           await audioManager.playAudioUrl(track.url);
           setCurrentTrackIndex(index);
+          
+          // INTELLIGENT MATCHING
+          const matchedShape = getShapeFromFilename(track.name);
+          if (matchedShape) {
+              setCurrentShape(matchedShape);
+              setAutoMatchedShape(true);
+          } else {
+              // Default to Galaxy for music if no specific match
+              setCurrentShape(ShapeType.GALAXY);
+              setAutoMatchedShape(false);
+          }
+          audioManager.triggerWarp();
           
           if (isMuted) {
               setIsMuted(false);
@@ -188,6 +275,7 @@ const App: React.FC = () => {
       if (e) e.stopPropagation();
       audioManager.stopAudio();
       setCurrentTrackIndex(null);
+      setAutoMatchedShape(false);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -195,15 +283,26 @@ const App: React.FC = () => {
       if (file) {
           try {
               const url = audioManager.createAudioUrl(file);
-              const newTrack = { name: file.name.replace(/\.[^/.]+$/, ""), url };
+              const name = file.name.replace(/\.[^/.]+$/, "");
+              const newTrack = { name, url };
               
               setPlaylist(prev => [...prev, newTrack]);
-              // Automatically play the new track
-              const newIndex = playlist.length; // Index of item about to be added
+              const newIndex = playlist.length; 
               
-              // We need to wait for state update in a real app, but here we can just do it
               audioManager.playAudioUrl(url).then(() => {
                    setCurrentTrackIndex(newIndex);
+                   
+                   // INTELLIGENT MATCHING
+                   const matchedShape = getShapeFromFilename(name);
+                   if (matchedShape) {
+                       setCurrentShape(matchedShape);
+                       setAutoMatchedShape(true);
+                   } else {
+                       setCurrentShape(ShapeType.GALAXY);
+                       setAutoMatchedShape(false);
+                   }
+                   audioManager.triggerWarp(); 
+
                    if (isMuted) {
                       setIsMuted(false);
                       audioManager.toggleMute(false);
@@ -224,11 +323,13 @@ const App: React.FC = () => {
   };
 
   const shapes = [
+    { type: ShapeType.SOLAR_SYSTEM, label: 'Solar Sys', icon: Sun },
     { type: ShapeType.GALAXY, label: 'Galaxy', icon: Wind },
     { type: ShapeType.DNA, label: 'DNA', icon: Atom },
     { type: ShapeType.HEART, label: 'Heart', icon: Heart },
     { type: ShapeType.DOUBLE_HEART, label: '2 Hearts', icon: DoubleHeartIcon },
     { type: ShapeType.RING, label: 'Ring', icon: Gem },
+    { type: ShapeType.FLOWER_SEA, label: 'Flower Sea', icon: Sprout },
     { type: ShapeType.BUTTERFLY, label: 'Butterfly', icon: ButterflyIcon },
     { type: ShapeType.I_LOVE_U, label: 'I Love U', icon: Type },
     { type: ShapeType.FLOWER, label: 'Flower', icon: Flower2 },
@@ -292,6 +393,13 @@ const App: React.FC = () => {
                     <button onClick={stopMusic} className="ml-2 hover:text-white" title="Stop & Return to Gesture Mode">
                         <Square size={10} className="fill-current"/>
                     </button>
+                </div>
+            )}
+            
+            {autoMatchedShape && (
+                <div className="flex items-center gap-2 text-[10px] text-cyan-200/80 bg-cyan-900/20 p-1.5 px-2 rounded border border-cyan-500/20 backdrop-blur-md">
+                    <Wand2 className="w-3 h-3 text-cyan-400" />
+                    <span className="font-mono">Auto-Vibe Match: {currentShape}</span>
                 </div>
             )}
           </div>

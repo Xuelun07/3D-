@@ -23,8 +23,9 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
   
-  // Use refs for callbacks to prevent re-triggering useEffect when parent state changes (e.g., isMusicMode)
+  // Use refs for callbacks to prevent re-triggering useEffect when parent state changes
   const latestOnHandUpdate = useRef(onHandUpdate);
   const latestOnGestureTrigger = useRef(onGestureTrigger);
 
@@ -48,23 +49,51 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
 
   // Manual start function
   const startCamera = useCallback(async () => {
-    if (!cameraRef.current) return;
+    if (!isMountedRef.current) return;
     
+    // Reset states for retry
     setError(null);
+    setIsInitializing(true);
+
+    // Check for API support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (isMountedRef.current) {
+            setError("Camera API not supported in this browser.");
+            setIsInitializing(false);
+        }
+        return;
+    }
     
     try {
-      await cameraRef.current.start();
-      if (isMountedRef.current) {
-        setCameraActive(true);
+      // Create camera instance if needed (though useEffect usually handles this)
+      if (cameraRef.current) {
+        // Calling start() triggers the permission prompt if not already granted
+        await cameraRef.current.start();
+        
+        if (isMountedRef.current) {
+            setCameraActive(true);
+            setIsInitializing(false);
+        }
+      } else {
+         // Should not happen if useEffect runs first, but safeguard
+         if (isMountedRef.current) setIsInitializing(false);
       }
     } catch (err: any) {
       console.error("Camera start error", err);
       if (isMountedRef.current) {
         setCameraActive(false);
-        if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
-            setError("Permission denied. Please allow camera access.");
+        setIsInitializing(false);
+        
+        const msg = err.message || err.toString();
+        
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || msg.includes('Permission denied')) {
+            setError("Camera access denied. Please click the lock icon in your URL bar and 'Allow' camera access, then click Retry.");
+        } else if (err.name === 'NotFoundError') {
+            setError("No camera device found.");
+        } else if (err.name === 'NotReadableError') {
+            setError("Camera is in use by another application.");
         } else {
-            setError("Failed to access camera.");
+            setError("Failed to access camera: " + msg);
         }
       }
     }
@@ -76,6 +105,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
     
     if (!Camera || !Hands) {
       setError("Failed to load computer vision libraries.");
+      setIsInitializing(false);
       return;
     }
 
@@ -224,6 +254,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
     });
 
     // Initialize Camera
+    // We explicitly pass `video` options to ensure it tries to get user facing camera
     const camera = new Camera(videoRef.current, {
       onFrame: async () => {
         // Strict check: make sure component is mounted and hands instance exists
@@ -236,6 +267,9 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
             if (msg.includes("SolutionWasm") || msg.includes("deleted object")) {
                 return;
             }
+            // Suppress context lost errors
+            if (msg.includes("context") || msg.includes("gl")) return;
+            
             console.warn("MediaPipe send error:", e);
           }
         }
@@ -257,19 +291,19 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
             handsRef.current = null; // Prevent further access in async callbacks
         }
     };
-    // Removed callback props from dependencies to prevent re-initialization loops
-  }, [startCamera]);
+  }, [startCamera]); // Dependencies
 
   return (
     <div className="absolute bottom-4 left-4 z-50 pointer-events-auto">
       {/* Container for Video + Canvas Overlay */}
       <div className="relative rounded-lg overflow-hidden border-2 border-white/20 shadow-lg bg-black w-32 h-24">
-        {/* Video Element (Hidden logic handle, visible for debug if needed, but we cover with canvas) */}
+        {/* Video Element */}
         <video
             ref={videoRef}
             className={`absolute inset-0 w-full h-full object-cover transform scale-x-[-1] transition-opacity duration-500 ${cameraActive ? 'opacity-60' : 'opacity-0'}`}
             playsInline
             muted
+            autoPlay
         />
         
         {/* Canvas Overlay for Skeleton - Matches Video Transform */}
@@ -281,7 +315,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
         />
         
         {/* Loading Overlay */}
-        {!cameraActive && !error && (
+        {(isInitializing || (!cameraActive && !error)) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-white p-2 text-center z-10">
                 <RefreshCw className="animate-spin mb-1 opacity-70" size={20} />
                 <span className="text-[10px] opacity-70">Starting Camera...</span>
@@ -292,12 +326,12 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
         {error && (
              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/95 text-white p-2 text-center z-20">
                 <AlertCircle className="text-red-400 mb-1" size={20} />
-                <span className="text-[10px] text-red-200 mb-2 leading-tight">{error}</span>
+                <span className="text-[10px] text-red-200 mb-2 leading-tight px-1">{error}</span>
                 <button 
                     onClick={startCamera}
-                    className="bg-white/20 hover:bg-white/30 text-white text-[10px] px-2 py-1 rounded transition-colors flex items-center gap-1"
+                    className="bg-white/20 hover:bg-white/30 text-white text-[10px] px-2 py-1 rounded transition-colors flex items-center gap-1 mt-1"
                 >
-                    <CameraIcon size={10} /> Enable
+                    <CameraIcon size={10} /> Retry
                 </button>
             </div>
         )}

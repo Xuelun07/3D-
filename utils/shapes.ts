@@ -120,6 +120,21 @@ export const generateParticles = (shape: ShapeType, count: number = COUNT): Floa
         z = (Math.random() - 0.5) * 1.5;
         break;
       }
+      
+      case ShapeType.FLOWER_SEA: {
+        // Terrain / Field generation
+        const width = 14;
+        const depth = 14;
+        x = (Math.random() - 0.5) * width;
+        z = (Math.random() - 0.5) * depth;
+        // Rolling hills equation
+        y = Math.sin(x * 0.5) * Math.cos(z * 0.5) * 1.5 - 2.5;
+        // Lift slightly to center visuals
+        y += 1.0;
+        // Add some vertical scatter for "grass/stems" look
+        y += Math.random() * 0.6;
+        break;
+      }
 
       case ShapeType.RING: {
         if (Math.random() < 0.15) {
@@ -190,6 +205,63 @@ export const generateParticles = (shape: ShapeType, count: number = COUNT): Floa
           x = Math.cos(angle) * dist;
           z = Math.sin(angle) * dist; 
           y = (Math.random() - 0.5) * 0.1; 
+        }
+        break;
+      }
+      
+      case ShapeType.SOLAR_SYSTEM: {
+        // Probabilistic distribution for components
+        const r = Math.random();
+        
+        if (r < 0.15) {
+            // Sun (Center)
+            const p = getRandomPointInSphere(0.8);
+            x = p.x; y = p.y; z = p.z;
+        } else if (r < 0.55) {
+            // Orbital Rings (Visual guides)
+            const orbitRadii = [1.5, 2.2, 3.2, 4.5, 6.5, 8.5, 10.5, 12.5];
+            // Pick random orbit
+            const selectedOrbit = orbitRadii[Math.floor(Math.random() * orbitRadii.length)];
+            const rad = selectedOrbit + (Math.random() - 0.5) * 0.1; // Thickness
+            const theta = Math.random() * Math.PI * 2;
+            x = rad * Math.cos(theta);
+            z = rad * Math.sin(theta);
+            y = (Math.random() - 0.5) * 0.05; // Flat plane
+        } else {
+            // Planets (Spheres at specific locations)
+            // Radii: Mer(1.5), Ven(2.2), Ear(3.2), Mar(4.5), Jup(6.5), Sat(8.5), Ura(10.5), Nep(12.5)
+            // Relative sizes approx
+            const planets = [
+                { r: 1.5, size: 0.1, angle: 0 }, 
+                { r: 2.2, size: 0.18, angle: 1.2 }, 
+                { r: 3.2, size: 0.2, angle: 2.5 }, 
+                { r: 4.5, size: 0.15, angle: 4.0 }, 
+                { r: 6.5, size: 0.5, angle: 5.5 }, 
+                { r: 8.5, size: 0.45, angle: 0.5 }, 
+                { r: 10.5, size: 0.3, angle: 2.0 }, 
+                { r: 12.5, size: 0.3, angle: 3.5 }  
+            ];
+            
+            const pIdx = Math.floor(Math.random() * planets.length);
+            const planet = planets[pIdx];
+            
+            // Calculate Planet Center
+            const centerX = planet.r * Math.cos(planet.angle);
+            const centerZ = planet.r * Math.sin(planet.angle);
+            
+            const p = getRandomPointInSphere(planet.size);
+            x = centerX + p.x;
+            y = p.y;
+            z = centerZ + p.z;
+            
+            // Add Saturn's Rings specifically for index 5
+            if (pIdx === 5 && Math.random() > 0.5) {
+                 const ringR = planet.size * (1.4 + Math.random() * 0.8);
+                 const ringTheta = Math.random() * Math.PI * 2;
+                 x = centerX + ringR * Math.cos(ringTheta);
+                 z = centerZ + ringR * Math.sin(ringTheta);
+                 y = (Math.random()-0.5) * 0.05 + Math.sin(ringTheta)*0.1; // Tilted
+            }
         }
         break;
       }
