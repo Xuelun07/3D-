@@ -20,37 +20,47 @@ interface HandTrackerProps {
 
 const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigger }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
+  
+  // Use refs for callbacks to prevent re-triggering useEffect when parent state changes (e.g., isMusicMode)
+  const latestOnHandUpdate = useRef(onHandUpdate);
+  const latestOnGestureTrigger = useRef(onGestureTrigger);
+
+  useEffect(() => {
+    latestOnHandUpdate.current = onHandUpdate;
+    latestOnGestureTrigger.current = onGestureTrigger;
+  }, [onHandUpdate, onGestureTrigger]);
   
   // State for gesture detection
   const wasOpenRef = useRef<boolean>(false);
   const lastTriggerTimeRef = useRef<number>(0);
+  
+  // Smoothing refs
+  const prevPosRef = useRef({ x: 0.5, y: 0.5 });
+  const prevOpennessRef = useRef(0);
 
   // Safety refs for async cleanup
   const isMountedRef = useRef<boolean>(true);
   const handsRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
 
-  // Manual start function to be triggered by user gesture if needed
+  // Manual start function
   const startCamera = useCallback(async () => {
     if (!cameraRef.current) return;
     
     setError(null);
-    setIsInitializing(true);
     
     try {
       await cameraRef.current.start();
       if (isMountedRef.current) {
         setCameraActive(true);
-        setIsInitializing(false);
       }
     } catch (err: any) {
       console.error("Camera start error", err);
       if (isMountedRef.current) {
         setCameraActive(false);
-        setIsInitializing(false);
         if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
             setError("Permission denied. Please allow camera access.");
         } else {
@@ -66,14 +76,14 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
     
     if (!Camera || !Hands) {
       setError("Failed to load computer vision libraries.");
-      setIsInitializing(false);
       return;
     }
 
     // Initialize Hands
     const hands = new Hands({
       locateFile: (file: string) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        // Lock version to match index.html to prevent asset mismatch errors
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
       },
     });
     handsRef.current = hands;
@@ -86,13 +96,62 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
     });
 
     hands.onResults((results: any) => {
+      // Strict check to prevent processing results after unmount
       if (!isMountedRef.current) return;
 
-      let openness = 0;
-      let centerX = 0;
-      let centerY = 0;
+      // --- Draw Skeleton on Canvas ---
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      
+      if (canvas && ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        const FINGER_CONNECTIONS = [
+            [0, 1], [1, 2], [2, 3], [3, 4],         // Thumb
+            [0, 5], [5, 6], [6, 7], [7, 8],         // Index
+            [9, 10], [10, 11], [11, 12],            // Middle
+            [13, 14], [14, 15], [15, 16],           // Ring
+            [0, 17], [17, 18], [18, 19], [19, 20],  // Pinky
+            [5, 9], [9, 13], [13, 17]               // Palm
+        ];
+
+        if (results.multiHandLandmarks) {
+          ctx.lineWidth = 2;
+          
+          results.multiHandLandmarks.forEach((landmarks: any[]) => {
+            // Draw Connections (Bones)
+            ctx.strokeStyle = '#00f0ff'; // Cyan color
+            ctx.beginPath();
+            
+            FINGER_CONNECTIONS.forEach(([startIdx, endIdx]) => {
+                const start = landmarks[startIdx];
+                const end = landmarks[endIdx];
+                ctx.moveTo(start.x * canvas.width, start.y * canvas.height);
+                ctx.lineTo(end.x * canvas.width, end.y * canvas.height);
+            });
+            ctx.stroke();
+
+            // Draw Landmarks (Joints)
+            ctx.fillStyle = '#ffffff';
+            landmarks.forEach((point) => {
+                const x = point.x * canvas.width;
+                const y = point.y * canvas.height;
+                ctx.beginPath();
+                ctx.arc(x, y, 2.5, 0, 2 * Math.PI); // Small white dots
+                ctx.fill();
+            });
+          });
+        }
+      }
+
+      // --- Original Processing Logic ---
+      let rawOpenness = 0;
+      let rawX = 0.5;
+      let rawY = 0.5;
+      let hasHand = false;
 
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        hasHand = true;
         if (results.multiHandLandmarks.length === 2) {
            // Two hands
            const hand1 = results.multiHandLandmarks[0][0]; 
@@ -103,9 +162,9 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
                Math.pow(hand1.y - hand2.y, 2)
            );
            
-           openness = Math.min(Math.max((dist - 0.1) * 2, 0), 1);
-           centerX = (hand1.x + hand2.x) / 2;
-           centerY = (hand1.y + hand2.y) / 2;
+           rawOpenness = Math.min(Math.max((dist - 0.05) * 2.5, 0), 1);
+           rawX = (hand1.x + hand2.x) / 2;
+           rawY = (hand1.y + hand2.y) / 2;
 
         } else {
             // One hand
@@ -118,53 +177,65 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
                 Math.pow(wrist.y - middleTip.y, 2)
             );
             
-            openness = Math.min(Math.max((dist - 0.2) * 3, 0), 1);
-            centerX = landmarks[9].x; 
-            centerY = landmarks[9].y;
+            rawOpenness = Math.min(Math.max((dist - 0.12) * 3.5, 0), 1);
+            rawX = landmarks[9].x; 
+            rawY = landmarks[9].y;
         }
+      } 
 
-        // Gesture Trigger Logic
-        const now = Date.now();
-        const isOpen = openness > 0.65;
-        const isClosed = openness < 0.25;
+      // --- Smoothing ---
+      const posAlpha = 0.7; 
+      const gestureAlpha = 0.6;
 
-        if (isOpen) {
-            wasOpenRef.current = true;
-        }
+      const smoothX = prevPosRef.current.x + (rawX - prevPosRef.current.x) * posAlpha;
+      const smoothY = prevPosRef.current.y + (rawY - prevPosRef.current.y) * posAlpha;
+      const targetOpenness = hasHand ? rawOpenness : 0.1;
+      const smoothOpenness = prevOpennessRef.current + (targetOpenness - prevOpennessRef.current) * gestureAlpha;
 
-        if (wasOpenRef.current && isClosed) {
-            if (now - lastTriggerTimeRef.current > 1000) {
-                if (onGestureTrigger) {
-                    onGestureTrigger();
-                }
-                lastTriggerTimeRef.current = now;
-                wasOpenRef.current = false; 
-            }
-        }
+      prevPosRef.current = { x: smoothX, y: smoothY };
+      prevOpennessRef.current = smoothOpenness;
 
-        onHandUpdate({
-          isOpen: openness > 0.5,
-          gestureValue: openness,
-          position: { x: centerX, y: centerY },
-        });
+      // --- Gesture Trigger ---
+      const now = Date.now();
+      const isOpen = smoothOpenness > 0.60;
+      const isClosed = smoothOpenness < 0.25;
 
-      } else {
-        wasOpenRef.current = false;
-        onHandUpdate({
-            isOpen: false,
-            gestureValue: 0.1, 
-            position: { x: 0.5, y: 0.5 },
-        });
+      if (isOpen) {
+          wasOpenRef.current = true;
+      }
+
+      if (wasOpenRef.current && isClosed) {
+          if (now - lastTriggerTimeRef.current > 450) {
+              if (latestOnGestureTrigger.current) {
+                  latestOnGestureTrigger.current();
+              }
+              lastTriggerTimeRef.current = now;
+              wasOpenRef.current = false; 
+          }
+      }
+
+      if (latestOnHandUpdate.current) {
+          latestOnHandUpdate.current({
+            isOpen: smoothOpenness > 0.5,
+            gestureValue: smoothOpenness,
+            position: { x: smoothX, y: smoothY },
+          });
       }
     });
 
     // Initialize Camera
     const camera = new Camera(videoRef.current, {
       onFrame: async () => {
+        // Strict check: make sure component is mounted and hands instance exists
         if (isMountedRef.current && videoRef.current && handsRef.current) {
           try {
-            await hands.send({ image: videoRef.current });
-          } catch (e) {
+            await handsRef.current.send({ image: videoRef.current });
+          } catch (e: any) {
+            // Suppress the specific "deleted object" or "SolutionWasm" errors which happen during race conditions
+            const msg = e ? e.toString() : '';
+            if (msg.includes("SolutionWasm") || msg.includes("deleted object")) {
+                return;
+            }
             console.warn("MediaPipe send error:", e);
           }
         }
@@ -174,35 +245,44 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
     });
     cameraRef.current = camera;
 
-    // Attempt auto-start
     startCamera();
 
     return () => {
         isMountedRef.current = false;
         if (cameraRef.current) {
-            // Camera.stop() is sometimes not enough to release the stream in some browsers
-            // but it's what the library provides.
-            cameraRef.current.stop(); 
+            try { cameraRef.current.stop(); } catch(e) {}
         }
         if (handsRef.current) {
-            handsRef.current.close();
+            try { handsRef.current.close(); } catch(e) {}
+            handsRef.current = null; // Prevent further access in async callbacks
         }
     };
-  }, [onHandUpdate, onGestureTrigger, startCamera]);
+    // Removed callback props from dependencies to prevent re-initialization loops
+  }, [startCamera]);
 
   return (
     <div className="absolute bottom-4 left-4 z-50 pointer-events-auto">
-      {/* Video Preview */}
-      <div className="relative rounded-lg overflow-hidden border-2 border-white/20 shadow-lg bg-black">
+      {/* Container for Video + Canvas Overlay */}
+      <div className="relative rounded-lg overflow-hidden border-2 border-white/20 shadow-lg bg-black w-32 h-24">
+        {/* Video Element (Hidden logic handle, visible for debug if needed, but we cover with canvas) */}
         <video
             ref={videoRef}
-            className={`w-32 h-24 object-cover transform scale-x-[-1] transition-opacity duration-500 ${cameraActive ? 'opacity-70' : 'opacity-0'}`}
+            className={`absolute inset-0 w-full h-full object-cover transform scale-x-[-1] transition-opacity duration-500 ${cameraActive ? 'opacity-60' : 'opacity-0'}`}
             playsInline
+            muted
+        />
+        
+        {/* Canvas Overlay for Skeleton - Matches Video Transform */}
+        <canvas 
+            ref={canvasRef}
+            width={640}
+            height={480}
+            className={`absolute inset-0 w-full h-full object-cover transform scale-x-[-1] transition-opacity duration-500 ${cameraActive ? 'opacity-100' : 'opacity-0'}`}
         />
         
         {/* Loading Overlay */}
         {!cameraActive && !error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-white p-2 text-center">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-white p-2 text-center z-10">
                 <RefreshCw className="animate-spin mb-1 opacity-70" size={20} />
                 <span className="text-[10px] opacity-70">Starting Camera...</span>
             </div>
@@ -210,7 +290,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onGestureTrigge
 
         {/* Error / Retry Overlay */}
         {error && (
-             <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90 text-white p-2 text-center">
+             <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/95 text-white p-2 text-center z-20">
                 <AlertCircle className="text-red-400 mb-1" size={20} />
                 <span className="text-[10px] text-red-200 mb-2 leading-tight">{error}</span>
                 <button 
